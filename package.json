@@ -1,0 +1,25 @@
+{
+  "name": "local-conversion-proxy",
+  "private": true,
+  "version": "0.2.0",
+  "description": "An experimental local proxy that lets OpenAI Codex use Claude (via the official Claude Code CLI, with your own sign-in) and local Ollama models next to its GPT models.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gezumi/local-conversion-proxy.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "bin": {
+    "lcp": "bin/lcp.mjs"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ws": "8.18.3"
+  }
+}
