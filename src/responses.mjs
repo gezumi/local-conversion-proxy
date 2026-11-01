@@ -75,6 +75,41 @@ export function usageOf(u) {
 }
 
 /**
+ * Codex decides what to do with a failed response from `error.code` alone
+ * (codex-api responses_error.rs): a code it does not know is "retryable", so
+ * Codex sends the same request again up to 5 times ("Reconnecting... n/5").
+ * For our failures that no retry can fix (not signed in, usage limit, model
+ * off...) that only repeats the failure and restarts Claude each time, so they
+ * go out as `invalid_prompt` (shown as is, never retried); a conversation too
+ * long for the model as `context_length_exceeded` (Codex's own handling); and
+ * brief congestion as `rate_limit_exceeded` with a delay Codex waits for. Our
+ * own code stays in `lcp_code` (Codex ignores the extra field).
+ */
+const TERMINAL_CODES = new Set([
+  // router
+  'forbidden', 'model_disabled', 'model_not_configured', 'compact_unsupported', 'request_too_large',
+  // Claude backend
+  'claude_auth', 'claude_account_mismatch', 'claude_version', 'claude_model_mismatch', 'claude_model_unavailable',
+  'claude_tools_not_exposed', 'claude_usage_limit', 'bad_request', 'bad_json', 'unsupported_input', 'model_not_supported',
+  'body_too_large', 'compaction_unavailable', 'output_duplicate', 'output_conflict', 'output_mixed_sessions',
+]);
+const CONTEXT_CODES = new Set(['claude_too_long']);
+/** Code -> seconds Codex should wait before its retry. */
+const CONGESTION_CODES = new Map([
+  ['claude_rate_limited', 20],
+  ['claude_overloaded', 20],
+]);
+
+export function codexError(code, message) {
+  const lcp = typeof code === 'string' ? code : 'lcp_error';
+  const text = typeof message === 'string' ? message : '';
+  if (CONTEXT_CODES.has(lcp)) return { code: 'context_length_exceeded', message: text, lcp_code: lcp };
+  if (CONGESTION_CODES.has(lcp)) return { code: 'rate_limit_exceeded', message: `${text} (try again in ${CONGESTION_CODES.get(lcp)}s)`, lcp_code: lcp };
+  if (TERMINAL_CODES.has(lcp)) return { code: 'invalid_prompt', message: text, lcp_code: lcp };
+  return { code: lcp, message: text, lcp_code: lcp };
+}
+
+/**
  * One response on a sink. Text is streamed as deltas into one assistant
  * message item; tool calls are complete items. Always ends with exactly one
  * of completed() / failed().
@@ -218,7 +253,7 @@ export class ResponseStream {
   failed({ code = 'lcp_error', message }) {
     this.closeReasoning();
     this.closeMessage();
-    this.event('response.failed', { response: { ...this.#base('failed'), error: { code, message } } });
+    this.event('response.failed', { response: { ...this.#base('failed'), error: codexError(code, message) } });
     this.end();
   }
 

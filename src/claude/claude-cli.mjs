@@ -190,7 +190,10 @@ export function parseAuthStatus(stdout) {
     }
   }
   const email = parsed?.email ?? parsed?.emailAddress ?? parsed?.account?.email ?? parsed?.account?.emailAddress ?? null;
+  const known = Boolean(parsed && typeof parsed === 'object' && typeof parsed.loggedIn === 'boolean');
   return {
+    /** false: the output was not a status at all (timeout, crash): nothing is known about the login. */
+    known,
     loggedIn: parsed?.loggedIn === true,
     subscription: parsed?.authMethod === 'claude.ai' && parsed?.apiProvider === 'firstParty',
     email: typeof email === 'string' ? email : null,
@@ -201,7 +204,7 @@ export function parseAuthStatus(stdout) {
 /** Full status of one account's login (for `lcp account list`). */
 export async function claudeAuthStatus({ bin, env, cwd, ...hooks }) {
   const r = await run(bin, ['auth', 'status', '--json'], env, cwd, hooks);
-  return r.ok || r.stdout ? parseAuthStatus(r.stdout) : { loggedIn: false, subscription: false, email: null, plan: null };
+  return r.ok || r.stdout ? parseAuthStatus(r.stdout) : { known: false, loggedIn: false, subscription: false, email: null, plan: null };
 }
 
 /**
@@ -210,6 +213,8 @@ export async function claudeAuthStatus({ bin, env, cwd, ...hooks }) {
  */
 export async function checkClaudeAuth({ bin, env, cwd, ...hooks }) {
   const s = await claudeAuthStatus({ bin, env, cwd, ...hooks });
+  // A probe that timed out or crashed says nothing about the login: not "signed out" (a retry can work).
+  if (!s.known) throw bridgeError(hooks.signal?.aborted ? 'client_disconnected' : 'claude_auth_check_failed');
   if (!s.loggedIn || !s.subscription) throw bridgeError('claude_auth');
   return true;
 }

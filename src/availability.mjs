@@ -34,7 +34,7 @@ function claudeEnv(base, account) {
   return env;
 }
 
-export function createAvailability({ getSettings, logger = { event() {} }, env = process.env, execFileImpl = execFile, fetchImpl = fetch, intervalMs = 60_000 } = {}) {
+export function createAvailability({ getSettings, logger = { event() {} }, env = process.env, execFileImpl = execFile, fetchImpl = fetch, intervalMs = 60_000, failuresToHide = 3 } = {}) {
   const state = {
     claudeCli: null, // { ok, version, missing: [] }
     accounts: new Map(), // id -> { loggedIn, subscription, plan }
@@ -44,18 +44,40 @@ export function createAvailability({ getSettings, logger = { event() {} }, env =
   let running = null;
   let lastKey = '';
 
+  /**
+   * A probe that fails without an answer (a busy Mac, Claude Code updating
+   * itself) says nothing new: the last known state stays until it has failed
+   * `failuresToHide` times in a row. A real answer (an old CLI, a signed-out
+   * account) counts at once.
+   */
+  const misses = { cli: 0, accounts: new Map() };
+
   async function checkClaude(settings) {
     const bin = settings.claude.bin || defaultClaudeBin(env);
     const [ver, help] = await Promise.all([run(execFileImpl, bin, ['--version'], env, 15_000), run(execFileImpl, bin, ['--help'], env, 15_000)]);
     const version = ver.ok ? ver.stdout.trim().split(/\s+/)[0] : null;
-    const missing = help.ok ? missingClaudeFlags(help.stdout) : REQUIRED_CLAUDE_FLAGS.map((alts) => alts[0]);
-    state.claudeCli = { ok: Boolean(version) && missing.length === 0, version, missing };
+    const answered = Boolean(version) && help.ok;
+    if (!answered && state.claudeCli?.ok && ++misses.cli < failuresToHide) {
+      logger.event('availability_probe_failed', { which: 'claude_cli', misses: misses.cli });
+    } else {
+      if (answered) misses.cli = 0;
+      const missing = help.ok ? missingClaudeFlags(help.stdout) : REQUIRED_CLAUDE_FLAGS.map((alts) => alts[0]);
+      state.claudeCli = { ok: Boolean(version) && missing.length === 0, version, missing };
+    }
     if (!state.claudeCli.ok) return;
     await Promise.all(
       settings.claude.accounts.map(async (a) => {
         if (a.disabled) return;
         const r = await run(execFileImpl, bin, ['auth', 'status', '--json'], claudeEnv(env, a), 20_000);
         const s = parseAuthStatus(r.stdout);
+        const before = state.accounts.get(a.id);
+        if (!s.known && before?.loggedIn && before?.subscription) {
+          const n = (misses.accounts.get(a.id) ?? 0) + 1;
+          misses.accounts.set(a.id, n);
+          if (n < failuresToHide) return void logger.event('availability_probe_failed', { which: 'claude_account', misses: n });
+        } else if (s.known) {
+          misses.accounts.delete(a.id);
+        }
         state.accounts.set(a.id, { loggedIn: s.loggedIn, subscription: s.subscription, plan: s.plan });
       }),
     );

@@ -305,6 +305,8 @@ export function createRouter(opts) {
     else if (req.method !== 'GET' && req.method !== 'HEAD') headers['content-length'] = '0';
 
     const attempt = (retried) => {
+      /** Codex closed its side before the upstream answer was passed on. */
+      let clientGone = false;
       const catalogPath = CATALOG_PATH.test(pathOnly(subPath(req.url)));
       const upReq = upMod.request({ protocol: up.protocol, host: up.hostname, port: up.port || undefined, method: req.method, path: upPrefix + subPath(req.url), headers, agent }, (upRes) => {
         clearTimeout(headersTimer);
@@ -353,6 +355,8 @@ export function createRouter(opts) {
         upReq.once('close', () => clearTimeout(connectTimer));
       });
       upReq.on('error', (err) => {
+        // Codex left first (Esc, a closed window) and we cut the upstream request: that says nothing about OpenAI.
+        if (clientGone) return logger.event('upstream_http_cancelled');
         if (!retried && upReq.reusedSocket && RETRYABLE.has(err.code) && !res.headersSent && !res.destroyed) {
           logger.event('upstream_http_retry', { code: err.code });
           return attempt(true);
@@ -363,7 +367,9 @@ export function createRouter(opts) {
         else res.destroy();
       });
       res.once('close', () => {
-        if (!res.writableFinished) upReq.destroy();
+        if (res.writableFinished) return;
+        clientGone = true;
+        upReq.destroy();
       });
       upReq.end(body && body.length ? body : undefined);
     };
@@ -607,7 +613,8 @@ export function createRouter(opts) {
       });
       ws.on('error', (err) => {
         logger.event('ws_upstream_error', { conn: conn.id, code: err?.code ?? 'error' });
-        if (!opened) noteUpstream('network', err?.code);
+        // closed by us because Codex left while it was still connecting: not an upstream failure
+        if (!opened && !conn.closed) noteUpstream('network', err?.code);
       });
     };
     attachUpstream(upstream);
@@ -705,7 +712,8 @@ export function createRouter(opts) {
         });
       } catch {
         logger.event('local_unhandled', { backend: entry?.backend ?? 'none' });
-        sink.send({ type: 'error', error: { type: 'proxy_error', code: 'local_backend_failed', message: 'ローカル変換プロキシ内部のエラーです。' } });
+        // Codex acts on an `error` frame only when it carries a status; without one it would wait for its idle timeout.
+        sink.send({ type: 'error', status: 500, error: { type: 'proxy_error', code: 'local_backend_failed', message: 'ローカル変換プロキシ内部のエラーです。' } });
       } finally {
         conn.localAborts.delete(ac);
         if (responseId) conn.localResponses.delete(responseId);

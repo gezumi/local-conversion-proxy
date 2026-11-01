@@ -207,7 +207,7 @@ test('Claude: a logged-out account fails with a readable message, not a crash', 
     try {
       const r = await c.create({ model: 'claude-opus-5-5', instructions: 'b', input: [userMsg('x')], tools: TOOLS });
       assert.equal(r.done.type, 'response.failed');
-      assert.equal(r.done.response.error.code, 'claude_auth');
+      assert.equal(r.done.response.error.lcp_code, 'claude_auth');
       assert.match(r.done.response.error.message, /lcp account login/);
     } finally {
       c.close();
@@ -221,7 +221,7 @@ test('Claude: usage-limit text from the CLI becomes a clear limit error', async 
     try {
       const r = await c.create({ model: 'claude-opus-5-5', instructions: 'b', input: [userMsg('x')], tools: TOOLS });
       assert.equal(r.done.type, 'response.failed');
-      assert.ok(['claude_error', 'claude_usage_limit'].includes(r.done.response.error.code));
+      assert.ok(['claude_error', 'claude_usage_limit'].includes(r.done.response.error.lcp_code));
       assert.ok(!JSON.stringify(r.done).includes('secret-detail'), 'CLI error text is not leaked');
     } finally {
       c.close();
@@ -448,7 +448,7 @@ test('local models serve only this Mac\'s own Codex sign-in: forged tokens and o
     ].entries()) {
       const last = await ask(headers, `k${i}`);
       assert.equal(last.type, 'response.failed');
-      assert.equal(last.response.error.code, 'forbidden');
+      assert.equal(last.response.error.lcp_code, 'forbidden');
     }
     const ok = await ask(CODEX_HEADERS, 'k-owner');
     assert.equal(ok.type, 'response.completed', JSON.stringify(ok));
@@ -456,7 +456,7 @@ test('local models serve only this Mac\'s own Codex sign-in: forged tokens and o
     try {
       const r = await c.create({ model: 'claude-opus-5-5', input: [userMsg('x')] });
       assert.equal(r.done.type, 'response.failed');
-      assert.equal(r.done.response.error.code, 'forbidden');
+      assert.equal(r.done.response.error.lcp_code, 'forbidden');
       const g = await c.create({ model: 'gpt-test', input: [userMsg('gpt is just relayed')] });
       assert.equal(g.done.type, 'response.completed');
     } finally {
@@ -469,7 +469,7 @@ test('local models serve only this Mac\'s own Codex sign-in: forged tokens and o
 test('without Codex credentials in auth.json, nobody may use the local models (GPT unaffected)', async () => {
   await withProxy({ auth: null }, async ({ port }) => {
     const last = parseSse(await (await postJson(port, { model: 'claude-opus-5-5', input: [userMsg('x')] })).text()).at(-1);
-    assert.equal(last.response.error.code, 'forbidden');
+    assert.equal(last.response.error.lcp_code, 'forbidden');
     const g = parseSse(await (await postJson(port, { model: 'gpt-test', input: [userMsg('x')] })).text()).at(-1);
     assert.equal(g.type, 'response.completed');
   });
@@ -488,7 +488,7 @@ test('after Codex refreshes its token, an open socket keeps working and the new 
     const fresh = parseSse(await (await postJson(port, { model: 'claude-opus-5-5', input: [userMsg('y')], prompt_cache_key: 'k2' }, { authorization: 'Bearer chatgpt-token-refreshed-0123456789', 'chatgpt-account-id': TEST_ACCOUNT })).text()).at(-1);
     assert.equal(fresh.type, 'response.completed', JSON.stringify(fresh));
     const stale = parseSse(await (await postJson(port, { model: 'claude-opus-5-5', input: [userMsg('z')], prompt_cache_key: 'k3' })).text()).at(-1);
-    assert.equal(stale.response.error.code, 'forbidden', 'the replaced token no longer opens new requests');
+    assert.equal(stale.response.error.lcp_code, 'forbidden', 'the replaced token no longer opens new requests');
   });
 });
 
@@ -505,12 +505,12 @@ test('turned-off and removed local models are refused here: their conversation n
     ]) {
       const last = parseSse(await (await postJson(port, { model, input: [userMsg('private conversation')] })).text()).at(-1);
       assert.equal(last.type, 'response.failed', model);
-      assert.equal(last.response.error.code, code, model);
+      assert.equal(last.response.error.lcp_code, code, model);
     }
     const c = await wsClient(port);
     try {
       const r = await c.create({ model: 'claude-opus-5-5-a2', input: [userMsg('private conversation')] });
-      assert.equal(r.done.response.error.code, 'model_disabled');
+      assert.equal(r.done.response.error.lcp_code, 'model_disabled');
     } finally {
       c.close();
     }
@@ -543,7 +543,7 @@ test('a request turned away as busy does not kill the conversation another reque
     await new Promise((r) => setTimeout(r, 700));
     const second = parseSse(await (await postJson(port, body)).text()).at(-1);
     assert.equal(second.type, 'response.failed');
-    assert.equal(second.response.error.code, 'session_busy');
+    assert.equal(second.response.error.lcp_code, 'session_busy');
     const done = (await first).at(-1);
     assert.equal(done.type, 'response.completed', JSON.stringify(done));
     assert.match(done.response.output[0].content[0].text, /^first part\s+and the rest$/);
@@ -679,7 +679,7 @@ test('an expired Claude login mid-use is reported as a login problem, without le
     try {
       const r = await c.create({ model: 'claude-opus-5-5', instructions: 'b', input: [userMsg('x')], tools: TOOLS });
       assert.equal(r.done.type, 'response.failed');
-      assert.equal(r.done.response.error.code, 'claude_auth');
+      assert.equal(r.done.response.error.lcp_code, 'claude_auth');
       assert.match(r.done.response.error.message, /lcp account login/);
       assert.ok(!JSON.stringify(r.done).includes('OAuth session'));
     } finally {
@@ -802,6 +802,31 @@ test('OpenAI unreachable from the proxy is reported (for the watchdog), and its 
   });
 });
 
+test('requests Codex itself abandons (Esc before OpenAI answered) never count as OpenAI being unreachable', async () => {
+  const http = await import('node:http');
+  // an upstream that accepts the request but answers only much later
+  const slow = http.createServer((_req, res) => setTimeout(() => res.end('late'), 5000).unref());
+  await new Promise((r) => slow.listen(0, '127.0.0.1', r));
+  try {
+    await withProxy({ upstreamUrl: `http://127.0.0.1:${slow.address().port}/backend-api/codex` }, async ({ port, logLines }) => {
+      for (let i = 0; i < 4; i += 1) {
+        const ac = new AbortController();
+        const pending = fetch(`${base(port)}/some/path`, { signal: ac.signal }).catch(() => null);
+        await new Promise((r) => setTimeout(r, 80));
+        ac.abort();
+        await pending;
+      }
+      assert.ok(await until(() => logLines.filter((l) => l.ev === 'upstream_http_cancelled').length === 4));
+      const h = await (await fetch(`${base(port)}/healthz`)).json();
+      assert.equal(h.upstream.network_failures, 0);
+      assert.equal(h.upstream_ok, true, 'the watchdog must not send Codex away from the proxy for this');
+    });
+  } finally {
+    slow.closeAllConnections?.();
+    slow.close();
+  }
+});
+
 test('a 404 for the model list means a wrong upstream; elsewhere (e.g. an unknown model) it is just an answer', async () => {
   const http = await import('node:http');
   const s404 = http.createServer((_req, res) => {
@@ -858,7 +883,7 @@ test('an account not on the subscription route never gets conversation content, 
     try {
       const r = await c.create({ model: 'claude-opus-5-5', instructions: 'b', input: longHistory(), tools: TOOLS });
       assert.equal(r.done.type, 'response.failed');
-      assert.equal(r.done.response.error.code, 'claude_auth');
+      assert.equal(r.done.response.error.lcp_code, 'claude_auth');
       assert.equal(fake.record().filter((x) => x.kind === 'summary_request').length, 0);
       assert.equal(fake.record().filter((x) => x.kind === 'argv').length, 0);
     } finally {
@@ -1099,7 +1124,7 @@ test('Claude → GPT → Claude: compaction summarizes the whole current convers
       // chained to a response this proxy never saw: refused, not answered from another session of the thread
       const k1 = await c.create({ model: 'claude-opus-5-5', instructions: 'b', previous_response_id: r2.done.response.id, input: [{ type: 'compaction_trigger' }], tools: TOOLS, prompt_cache_key: 'mix' });
       assert.equal(k1.done.type, 'response.failed');
-      assert.equal(k1.done.response.error.code, 'previous_response_unknown');
+      assert.equal(k1.done.response.error.lcp_code, 'previous_response_unknown');
       // the full history: summarized from its transcript (the old session has not seen the GPT part)
       const k2 = await c.create({ model: 'claude-opus-5-5', instructions: 'b', input: [userMsg('first, with claude'), said('claude answer'), userMsg('the gpt part'), said('gpt answer'), { type: 'compaction_trigger' }], tools: TOOLS, prompt_cache_key: 'mix' });
       assert.equal(k2.done.type, 'response.completed', JSON.stringify(k2.done));
@@ -1148,7 +1173,7 @@ test('a request that fails (login expired) keeps what it was chained to: the ret
       const pre = await c.create({ model: 'claude-opus-5-5', generate: false, instructions: 'b', input: [userMsg('context before the turn')], tools: TOOLS });
       const body = { model: 'claude-opus-5-5', previous_response_id: pre.done.response.id, instructions: 'b', input: [userMsg('the question')], tools: TOOLS };
       const failed = await c.create(body);
-      assert.equal(failed.done.response.error.code, 'claude_auth');
+      assert.equal(failed.done.response.error.lcp_code, 'claude_auth');
       write(authFile, JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }));
       const retried = await c.create(body);
       assert.equal(retried.done.type, 'response.completed', JSON.stringify(retried.done));

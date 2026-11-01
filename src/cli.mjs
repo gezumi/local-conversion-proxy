@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { install, off, on, restoreAfterRecovery, status, uninstall } from './service.mjs';
+import { errorsReport } from './diagnose.mjs';
 import { share } from './share.mjs';
 import { loadSettings, saveSettings } from './settings.mjs';
 
@@ -17,6 +18,7 @@ const HELP = `lcp — ローカル変換プロキシ
   lcp on | off               Claude/ローカルモデルの経路を有効化 / OpenAI 直結に戻す（既定モデルが Claude/ローカルなら GPT に替え、on で戻す）
   lcp uninstall              サービスを止めて設定の1行を外す（設定・ログは残す）
   lcp models                 追加されるモデル名の一覧
+  lcp errors [時間]          直近のエラーを種類ごとに集計（既定 24 時間。会話の内容は含みません）
   lcp account list           Claude Code アカウントとログイン状態
   lcp account add [名前]     アカウントを追加（その後 lcp account login <番号>）
   lcp account login <番号>   そのアカウントでブラウザログイン（本人が操作）
@@ -93,6 +95,11 @@ async function main() {
       // compatibility: an older launchd entry ran `lcp watchdog`; the watchdog is now a shell script
       const script = join(paths().configDir, 'watchdog.sh');
       if (existsSync(script)) spawnSync('/bin/sh', [script], { stdio: 'inherit' });
+      return;
+    }
+    case 'errors': {
+      const hours = Number(sub);
+      console.log(errorsReport({ hours: Number.isFinite(hours) && hours > 0 ? hours : 24 }));
       return;
     }
     case 'models': {

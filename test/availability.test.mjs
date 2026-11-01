@@ -49,3 +49,33 @@ test('an outdated Claude Code hides every Claude model; no Ollama hides the loca
   assert.ok(snap.claude_cli.missing_flags.includes('--effort'));
   assert.equal(snap.ollama.ok, false);
 });
+
+test('a probe that fails without an answer (busy Mac, CLI updating) does not hide working models at once', async () => {
+  const s = settingsWith([{ id: '1', label: '', configDir: null }]);
+  let broken = false;
+  const good = fakeExec({ loggedIn: { 1: true } });
+  const exec = (bin, args, opts, cb) => (broken ? cb(Object.assign(new Error('timeout'), { killed: true }), '') : good(bin, args, opts, cb));
+  const avail = createAvailability({ getSettings: () => s, execFileImpl: exec, fetchImpl: ollamaDown });
+  await avail.refresh();
+  assert.equal(buildCatalog(s, avail).length, 3);
+  broken = true;
+  await avail.refresh();
+  await avail.refresh();
+  assert.equal(buildCatalog(s, avail).length, 3, 'two failed probes in a row keep the last known state');
+  await avail.refresh();
+  assert.equal(buildCatalog(s, avail).length, 0, 'the third one counts');
+  broken = false;
+  await avail.refresh();
+  assert.equal(buildCatalog(s, avail).length, 3, 'a real answer brings them back at once');
+});
+
+test('a real "signed out" answer hides the account at once', async () => {
+  const s = settingsWith([{ id: '1', label: '', configDir: null }]);
+  const loggedIn = { 1: true };
+  const avail = createAvailability({ getSettings: () => s, execFileImpl: fakeExec({ loggedIn }), fetchImpl: ollamaDown });
+  await avail.refresh();
+  assert.equal(buildCatalog(s, avail).length, 3);
+  loggedIn[1] = false;
+  await avail.refresh();
+  assert.equal(buildCatalog(s, avail).length, 0);
+});

@@ -210,7 +210,11 @@ test('an Ollama stream that ends without completing is a failure, not a successf
   });
 });
 
-test('preparing a larger-context model is bounded and cancellable; a failed attempt falls back and is retried later', async () => {
+test('preparing a larger-context model is bounded and cancellable; a failed attempt falls back and is retried later', async (t) => {
+  // The fake Ollama below waits only on AbortSignal.timeout, which does not keep Node running
+  // (the real proxy's server does): without this the test runner ends the run mid-test.
+  const keepAlive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(keepAlive));
   const { createOllamaBackend } = await import('../src/ollama.mjs');
   const seen = [];
   let showHangs = true;

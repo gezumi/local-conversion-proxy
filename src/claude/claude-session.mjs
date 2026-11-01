@@ -32,13 +32,23 @@ const NOTIFICATION_TYPES = new Set(['rate_limit_event', 'tool_progress', 'tool_u
  * Which fixed, user-facing error an error text from the Claude Code CLI means.
  * The text itself never leaves this process.
  */
-export function classifyCliError(text) {
+export function classifyCliError(text, status = null) {
   const t = String(text ?? '');
+  // The CLI reports the API's HTTP status with its error (api_error_status): it decides first.
+  const s = Number.isInteger(status) ? status : null;
+  if (s === 401) return 'claude_auth';
+  if (s === 404) return 'claude_model_unavailable';
+  if (s === 413) return 'claude_too_long';
+  if (s === 529) return 'claude_overloaded';
+  if (s === 429) return /usage limit|hit your limit|limit reached|out of (extra )?usage|weekly limit|5-hour limit|session limit|上限/i.test(t) ? 'claude_usage_limit' : 'claude_rate_limited';
+  if (s !== null && s >= 500 && s <= 599) return /overloaded/i.test(t) ? 'claude_overloaded' : 'claude_api_error';
+  if (/issue with the selected model|model .*(may not exist|not found|not available)|not have access to (it|this model)/i.test(t)) return 'claude_model_unavailable';
   if (/log ?in|authenticat|oauth|credential|session expired|token (has )?expired/i.test(t)) return 'claude_auth';
   if (/prompt is too long|too long|context (window|length|limit)|maximum context|request_too_large|\b413\b|exceeds? (the )?(max|context)/i.test(t)) return 'claude_too_long';
   if (/usage limit|hit your limit|limit reached|out of (extra )?usage|weekly limit|5-hour limit|session limit|上限/i.test(t)) return 'claude_usage_limit';
   if (/\b429\b|rate[_ -]?limit|too many requests/i.test(t)) return 'claude_rate_limited';
   if (/\b529\b|overloaded/i.test(t)) return 'claude_overloaded';
+  if (/api error: 5\d\d|internal server error|connection error|request timed out|ECONNRESET|ETIMEDOUT|fetch failed/i.test(t)) return 'claude_api_error';
   return 'claude_error';
 }
 
@@ -411,7 +421,7 @@ export class ClaudeSession {
     if (!m || typeof m !== 'object') return this.#fail('claude_protocol');
     // "<synthetic>" marks CLI-generated error text (usage limit, API error): not model output.
     if (m.model === '<synthetic>') {
-      const code = classifyCliError((Array.isArray(m.content) ? m.content : []).map((b) => (typeof b?.text === 'string' ? b.text : '')).join(' '));
+      const code = classifyCliError((Array.isArray(m.content) ? m.content : []).map((b) => (typeof b?.text === 'string' ? b.text : '')).join(' '), ev.api_error_status ?? m.api_error_status ?? null);
       if (code === 'claude_auth') this.#cfg.onAuthFailure?.(this.#cfg.account);
       return this.#fail(code);
     }
@@ -453,7 +463,7 @@ export class ClaudeSession {
   #onResult(ev) {
     if (ev.subtype !== 'success' || ev.is_error) {
       // The CLI's own text is never forwarded; it only picks the user-facing reason.
-      const code = classifyCliError(typeof ev.result === 'string' ? ev.result : '');
+      const code = classifyCliError(typeof ev.result === 'string' ? ev.result : '', ev.api_error_status ?? null);
       if (code === 'claude_auth') this.#cfg.onAuthFailure?.(this.#cfg.account);
       return this.#fail(code);
     }
